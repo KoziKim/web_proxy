@@ -50,6 +50,7 @@ void doit(int fd)
   int is_static;
   struct stat sbuf;
   char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
+  char filename[MAXLINE], cgiargs[MAXLINE];
   rio_t rio;
 
   /* request 라인과 헤더를 읽기 */
@@ -140,6 +141,10 @@ int parse_uri(char *uri, char *filename, char *cgiargs)
     strcat(filename, uri);
     if (uri[strlen(uri) - 1] == '/')
       strcat(filename, "home.html");
+    else if (strcmp(uri, "/mp4") == 0)
+      strcpy(filename, "mp4.html");
+    else if (strcmp(uri, "/adder") == 0)
+      strcpy(filename, "adder.html");
     return 1;
   }
   else
@@ -172,12 +177,21 @@ void serve_static(int fd, char *filename, int filesize)
   Rio_writen(fd, buf, strlen(buf));
   printf("Response headers:\n");
   printf("%s", buf);
+
   /* Send response body to client */
   srcfd = Open(filename, O_RDONLY, 0);
-  srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0);
+  srcp = (char *)malloc(filesize); // 동적 메모리 할당
+  if (srcp == NULL)
+  {
+    // 메모리 할당 실패 처리
+    fprintf(stderr, "Failed to allocate memory for file: %s\n", filename);
+    Close(srcfd);
+    return;
+  }
+  Rio_readn(srcfd, srcp, filesize); // 파일 내용을 동적 메모리에 읽어옴
   Close(srcfd);
-  Rio_writen(fd, srcp, filesize);
-  Munmap(srcp, filesize);
+  Rio_writen(fd, srcp, filesize); // 동적 메모리의 파일 내용을 클라이언트에게 전송
+  free(srcp);                     // 동적 메모리 해제
 }
 /*
  * get_filetype - Derive file type from filename
@@ -192,6 +206,8 @@ void get_filetype(char *filename, char *filetype)
     strcpy(filetype, "image/png");
   else if (strstr(filename, ".jpg"))
     strcpy(filetype, "image/jpeg");
+  else if (strstr(filename, ".mp4"))
+    strcpy(filetype, "video/mp4");
   else
     strcpy(filetype, "text/plain");
 }
@@ -205,7 +221,8 @@ void serve_dynamic(int fd, char *filename, char *cgiargs)
   Rio_writen(fd, buf, strlen(buf));
   sprintf(buf, "Server: Tiny Web Server\r\n");
   Rio_writen(fd, buf, strlen(buf));
-  if (Fork() == 0) { /* Child */
+  if (Fork() == 0)
+  { /* Child */
     /* Real server would set all CGI vars here */
     setenv("QUERY_STRING", cgiargs, 1);
     Dup2(fd, STDOUT_FILENO);              /* Redirect stdout to client */

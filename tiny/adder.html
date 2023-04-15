@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Adder</title>
+</head>
+<body>
+  <h1>Adder</h1>
+  <form action="/cgi-bin/adder" method="get">
+    <label for="num1">Number 1:</label>
+    <input type="text" id="num1" name="n1">
+    <br>
+    <label for="num2">Number 2:</label>
+    <input type="text" id="num2" name="n2">
+    <br>
+    <input type="submit" value="Add">
+  </form>
+</body>
+</html>
+
+<!-- <!DOCTYPE html>
+<html>
+<head>
+  <title>Adder</title>
+  <script>
+    function submitForm() {
+      var num1 = document.getElementById("num1").value;
+      var num2 = document.getElementById("num2").value;
+      var query = num1 + "&" + num2;
+      window.location.href = "/cgi-bin/adder?" + query;
+    }
+  </script>
+</head>
+<body>
+  <h1>Adder</h1>
+  <form action="/cgi-bin/adder" method="get">
+    <label for="num1">Number 1:</label>
+    <input type="text" id="num1" name="num1">
+    <br>
+    <label for="num2">Number 2:</label>
+    <input type="text" id="num2" name="num2">
+    <br>
+    <input type="button" value="Add" onclick="submitForm()">
+  </form>
+</body>
+</html> -->
