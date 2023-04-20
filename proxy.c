@@ -5,11 +5,26 @@
 #define MAX_CACHE_SIZE 1049000
 #define MAX_OBJECT_SIZE 102400
 
+struct cache
+{ // 캐시 구조체
+  char uri[MAXLINE];
+  char object[MAX_OBJECT_SIZE];
+  int size;
+  struct cache *prev;
+  struct cache *next;
+  time_t timestamp;
+};
+
+struct cache *cache_list = NULL;
+int cache_size = 0;
+
 void parse_uri(char *uri, char *host, char *port, char *path);
 void modify_http_header(char *http_header, char *hostname, int port, char *path, rio_t *server_rio);
 void doit(int fd);
 void *thread(void *vargp);
-
+struct cache *get_cache_node_by_uri(char *uri);
+void cache_insert(char *uri, char *object, int size);
+void cache_remove();
 // 클라이언트한테 받아서, 서버로 보냄
 // 서버 응답 받아서, 클라이언트한테 보냄
 
@@ -26,7 +41,6 @@ int main(int argc, char **argv)
   struct sockaddr_storage client_addr;
   pthread_t tid;
 
-  // struct sockaddr_in proxy_addr;
   if (argc != 2)
   {
     fprintf(stderr, "usage: %s <port>\n", argv[0]);
@@ -35,7 +49,6 @@ int main(int argc, char **argv)
 
   // 소켓 생성
   listenfd = Open_listenfd(argv[1]);
-  // listenfd = socket(AF_INET, SOCK_STREAM, 0);
   if (listenfd < 0)
   {
     printf("socket 생성\n");
@@ -46,7 +59,7 @@ int main(int argc, char **argv)
   {
     client_len = sizeof(client_addr);
     connfdp = Malloc(sizeof(int));
-    *connfdp = Accept(listenfd, (SA *) &client_addr, &client_len); // line:netp:tiny:accept
+    *connfdp = Accept(listenfd, (SA *)&client_addr, &client_len); // line:netp:tiny:accept
     if (*connfdp < 0)
     {
       perror("accept failed");
@@ -57,9 +70,6 @@ int main(int argc, char **argv)
     printf("Accepted connection from (%s, %s)\n", hostname, port);
 
     Pthread_create(&tid, NULL, thread, connfdp);
-
-    // doit(connfdp);  // line:netp:tiny:doit
-    // Close(connfdp); // line:netp:tiny:close
   }
   printf("%s", user_agent_hdr);
   return 0;
@@ -95,18 +105,26 @@ void doit(int fd)
     printf("Proxy does not implement the method\n");
     return;
   }
+
+  // 캐시 체크해서 있으면 캐시 히트
+  struct cache *cached_item = get_cache_node_by_uri(uri);
+  if (cached_item != NULL)
+  {
+    printf("--------CACHE HIT--------\n");
+    printf("Proxy read %d bytes from cache and sent to client\n", cached_item->size);
+    Rio_writen(fd, cached_item->object, cached_item->size);
+    return;
+  }
+
   // 요청 처리
   // 요청에서 목적지 서버의 호스트 및 포트 정보를 추출
   parse_uri(uri, host, port, path);
-  // printf("parse 후\n");
+
   // proxy 서버가 client 서버 역할 함
   // 클라이언트로부터 받은 HTTP 요청을 목적지 서버로
 
-  // printf("hostname: %s\n", host);
   serverfd = Open_clientfd(host, port); // serverfd = proxy가 client로 목적지 서버로 보낼 소켓 식별자
-  // printf("서브fd 연 후\n");
   sprintf(server_buf, "%s %s %s\r\n", method, path, version);
-  // printf("sprintf 다음 server_buf = %s\n", server_buf);
   printf("To server:\n%s\n", server_buf);
 
   // 목적지 서버로 HTTP 요청 전송
@@ -118,87 +136,46 @@ void doit(int fd)
     perror("Failed to connect to server");
     exit(EXIT_FAILURE);
   }
-  // printf("rio_server = %s\n", rio_server);
-  // printf("server_buf = %s\n", server_buf);
-  // printf("buf = %s\n", buf);
-  // printf("rio_server = %s\n", rio_server);
-  // printf("&rio_client = %s\n", &rio_client);
+
   modify_http_header(server_buf, host, port, path, &rio_client); // 클라이언트로부터 받은 요청의 헤더를 수정하여 보냄
-  // while (Rio_readlineb(&rio_client, buf, MAXLINE) > 0)
-  // {
-  //   printf("Rio_readlineb 하는 중\n");
-  //   if (strcmp(buf, "\r\n") == 0) {
-  //     break;
-  //   }
-  //   // Host 헤더를 재작성하여 목적지 서버의 호스트 정보를 포함시킴
-  //   if (strstr(buf, "Host:") != NULL)
-  //   {
-  //     printf("들어오나?\n");
-  //     strcat(host_hdr, "Host: ");
-  //     strcat(host_hdr, uri);
-  //   }
-  //   else
-  //   {
-  //     printf("else?\n");
-  //     strcat(other_hdr, buf);
-  //   }
-  // }
-  // printf("여기에는 오나?\n");
-  // strcat(other_hdr, user_agent_hdr);
-  // printf("other_hdr: \n%s\n", other_hdr);
-
-  // sprintf(&rio_client, "%s%s%s%s%s%s%s", \
-    //         &rio_client, host_hdr, "Connection: close\r\n", \
-    //         "Proxy-Connection: close\r\n", user_agent_hdr, \
-    //         other_hdr, "\r\n");
-
-  // modify_http_header(server_buf, hostname, port, path, &rio_client); // 요청헤더 수정
   Rio_writen(serverfd, server_buf, strlen(server_buf));
+
+  // 서버로부터 응답 읽어서 클라이언트로
+  char cache_buf[MAX_OBJECT_SIZE];
+  int cache_buf_size = 0;
   size_t n;
-  while ((n = Rio_readlineb(&rio_server, server_buf, MAXLINE)) != 0)
-  {
+  while((n = Rio_readlineb(&rio_server, server_buf, MAXLINE)) != 0) {
+    printf("Proxy received %d bytes from server and sent to client\n", n);
     Rio_writen(fd, server_buf, n);
-    printf("Forwarding response: %s", server_buf);
-    // 목적지 서버로부터 HTTP 응답 받기
-    // // size_t n;
-    // while (Rio_readlineb(&rio_server, server_buf, MAXLINE) > 0)
-    // {
-    //   // HTTP 응답을 클라이언트로 전송
-    //   Rio_writen(fd, server_buf, MAXLINE);
 
-    //   // 화면에 출력
-    //   printf("Forwarding response: %s", server_buf);
-
-    //   if (strcmp(server_buf, "\r\n") == 0) {
-    //     break;
-    //   }
+    cache_buf_size += n;
+    if (cache_buf_size < MAX_OBJECT_SIZE) {
+      strcat(cache_buf, server_buf);
+    }
   }
-  // 연결 종료
   Close(serverfd);
+
+  if (cache_size < MAX_OBJECT_SIZE) {
+    printf("--------CACHE INSERT--------\n");
+    cache_insert(uri, cache_buf, cache_buf_size);
+  }
 }
 
 void parse_uri(char *uri, char *host, char *port, char *path)
 {
   // http://hostname:port/path 형태
-  // printf("port1: %s\n", port);
-  // printf("%s\n", uri);
   char *ptr = strstr(uri, "//");
-  // printf("ptr(uri): %s\n", ptr);
-  ptr = ptr != NULL ? ptr + 2 : uri; // http:// 생략
+
+  ptr = ptr != NULL ? ptr + 2 : uri; // http:// 건너뛰기
   char *host_ptr = ptr;              // host 부분 찾기
-  // printf("host_ptr: %s\n", host_ptr);
   char *port_ptr = strchr(ptr, ':'); // port 부분 찾기
-  // printf("port_ptr: %s\n", port_ptr);
   char *path_ptr = strchr(ptr, '/'); // path 부분 찾기
-  // printf("path_ptr: %s\n", path_ptr);
 
   strncpy(host, host_ptr, port_ptr - host_ptr); // 버퍼, 복사할 문자열, 복사할 길이
-  // printf("host: %s\n", host);
   // 포트가 있는 경우
   if (port_ptr != NULL && (path_ptr == NULL || port_ptr < path_ptr))
   {
     strncpy(port, port_ptr + 1, path_ptr - port_ptr - 1);
-    // printf("port: %s\n", port);
   }
   // 포트가 없는 경우
   else
@@ -243,4 +220,85 @@ void modify_http_header(char *http_header, char *hostname, int port, char *path,
 
   sprintf(http_header, "%s%s%s%s%s%s%s", http_header, host_hdr, "Connection: close\r\n", "Proxy-Connection: close\r\n", user_agent_hdr, other_hdr, "\r\n");
   return;
+}
+
+struct cache *get_cache_node_by_uri(char *uri)
+{
+  struct cache *ptr = cache_list;
+  while (ptr != NULL)
+  {
+    if (strcmp(ptr->uri, uri) == 0)
+    {                              // 캐시 리스트에 uri와 일치하는 캐시 노드 있으면
+      ptr->timestamp = time(NULL); // timestamp를 현재 시간으로(마지막으로 캐시 사용된 시간 기록)
+      return ptr;
+    }
+    ptr = ptr->next;
+  }
+  return NULL;
+}
+
+void cache_insert(char *uri, char *object, int size)
+{
+  struct cache *new_cache = malloc(sizeof(struct cache));
+  strcpy(new_cache->uri, uri);
+  strcpy(new_cache->object, object);
+  new_cache->size = size;
+  // 맨앞에 넣기
+  new_cache->prev = NULL;
+  new_cache->next = cache_list;
+  if (cache_list != NULL)
+  {
+    cache_list->prev = new_cache;
+  }
+  cache_list = new_cache;
+  cache_size = cache_size + size;
+
+  new_cache->timestamp = time(NULL);
+
+  while (cache_size > MAX_CACHE_SIZE)
+  {
+    cache_remove();
+  }
+}
+
+// LRU
+void cache_remove()
+{
+  struct cache *ptr = cache_list;
+  time_t oldest_time = time(NULL);
+  struct cache *oldest = NULL;
+
+  while (ptr != NULL)
+  {
+    if (ptr->timestamp < oldest_time)
+    {
+      oldest = ptr;
+      oldest_time = oldest->timestamp;
+    }
+    ptr = ptr->next;
+  }
+
+  if (oldest != NULL)
+  {
+    // 맨 앞 지우기
+    if (oldest->prev == NULL)
+    {
+      oldest->next->prev = NULL;
+      cache_list = oldest->next;
+    }
+    // 맨 뒤 지우기
+    else if (oldest->next == NULL)
+    {
+      oldest->prev->next = NULL;
+      oldest->prev = NULL;
+    }
+    // 중간 부분 지우기
+    else
+    {
+      oldest->prev->next = oldest->next;
+      oldest->next->prev = oldest->prev;
+    }
+    cache_size -= oldest->size;
+    free(oldest);
+  }
 }
